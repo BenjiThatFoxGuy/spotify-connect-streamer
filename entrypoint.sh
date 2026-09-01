@@ -53,7 +53,7 @@ run_subprocess() {
   FFMPEG_CMD="ffmpeg -loglevel warning -f s16le -ar 44100 -ac 2 -i pipe:0 -af aresample=async=1 -f mp3 -b:a ${BITRATE} -flush_packets 1 -content_type audio/mpeg ${ICECAST_URL}"
   librespot "${librespot_base_args[@]}" \
     --backend subprocess \
-    --subprocess-cmd "${FFMPEG_CMD}"
+    --device "${FFMPEG_CMD}"
 }
 
 # ── Pipe backend (fallback) ─────────────────────────────────────────────────
