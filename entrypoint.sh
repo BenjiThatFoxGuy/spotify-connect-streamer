@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Pipes librespot's raw PCM output into ffmpeg, which encodes it to MP3 and
-# pushes it into icecast as a live source.
+# Streams Spotify Connect audio to icecast via ffmpeg.
 #
-# Uses the subprocess backend by default (handles track transitions cleanly)
-# with a FIFO fallback for the pipe backend.
+# Three backend modes:
+#   alsa (default) - uses snd-aloop for real-time pacing. Prevents track skipping.
+#   subprocess     - librespot spawns ffmpeg per track. Simpler but may skip.
+#   pipe           - continuous pipe via FIFO. Legacy fallback.
 #
 set -uo pipefail
 
@@ -12,8 +13,13 @@ DEVICE_NAME="${DEVICE_NAME:-Stream Output}"
 MOUNT_POINT="${MOUNT_POINT:-stream.mp3}"
 ICECAST_HOST="${ICECAST_HOST:-icecast}"
 ICECAST_PORT="${ICECAST_PORT:-8000}"
-BACKEND="${BACKEND:-subprocess}"
+BACKEND="${BACKEND:-alsa}"
 BITRATE="${MP3_BITRATE:-192k}"
+CACHE_DIR="${CACHE_DIR:-/tmp/spot-cache}"
+ALSA_LOOPBACK_OUT="${ALSA_LOOPBACK_OUT:-hw:Loopback,0,0}"
+ALSA_LOOPBACK_IN="${ALSA_LOOPBACK_IN:-hw:Loopback,1,0}"
+
+mkdir -p "${CACHE_DIR}"
 
 if [ -z "${ICECAST_SOURCE_PASSWORD:-}" ]; then
   echo "entrypoint: ICECAST_SOURCE_PASSWORD is not set, refusing to start" >&2
@@ -22,10 +28,7 @@ fi
 
 ICECAST_URL="icecast://source:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/${MOUNT_POINT}"
 
-# Build the base librespot argument list.
-CACHE_DIR="${CACHE_DIR:-/tmp/spot-cache}"
-mkdir -p "${CACHE_DIR}"
-
+# Base librespot args (shared across all backends)
 librespot_base_args=(
   --name "${DEVICE_NAME}"
   --initial-volume 100
@@ -41,7 +44,6 @@ else
   echo "entrypoint: no credentials provided, starting in LAN-only zeroconf mode" >&2
 fi
 
-# Extra librespot flags, e.g. LIBRESPOT_EXTRA_ARGS="--bitrate 320"
 if [ -n "${LIBRESPOT_EXTRA_ARGS:-}" ]; then
   # shellcheck disable=SC2206
   librespot_base_args+=(${LIBRESPOT_EXTRA_ARGS})
@@ -49,11 +51,38 @@ fi
 
 echo "entrypoint: backend=${BACKEND}, streaming to ${ICECAST_URL}" >&2
 
-# ── Subprocess backend (preferred) ──────────────────────────────────────────
-# librespot manages ffmpeg's lifecycle per track. Track transitions are clean
-# because librespot spawns a new ffmpeg process for each track rather than
-# keeping a continuous pipe. This prevents ffmpeg buffer stalls from blocking
-# Connect transport controls (play/pause/skip).
+# ── ALSA loopback backend (preferred) ───────────────────────────────────────
+# Uses snd-aloop to pace audio output at real-time rate. This prevents
+# librespot from downloading tracks faster than playback speed, which
+# would cause Spotify to think the track finished and skip ahead.
+# Requires: sudo modprobe snd-aloop on the host, device shared into container.
+run_alsa() {
+  echo "entrypoint: using ALSA loopback (${ALSA_LOOPBACK_OUT} -> ${ALSA_LOOPBACK_IN})" >&2
+
+  # Start ffmpeg reading from the loopback capture side in background
+  ffmpeg -loglevel warning \
+    -f alsa -i "${ALSA_LOOPBACK_IN}" \
+    -af aresample=async=1 \
+    -f mp3 -b:a "${BITRATE}" \
+    -flush_packets 1 \
+    -content_type audio/mpeg \
+    "${ICECAST_URL}" &
+  FFMPEG_PID=$!
+
+  # Start librespot writing to the loopback playback side (real-time paced)
+  librespot "${librespot_base_args[@]}" \
+    --backend alsa \
+    --device "${ALSA_LOOPBACK_OUT}" \
+    --format S16
+
+  # If librespot exits, clean up ffmpeg
+  kill "${FFMPEG_PID}" 2>/dev/null || true
+  wait "${FFMPEG_PID}" 2>/dev/null || true
+}
+
+# ── Subprocess backend ──────────────────────────────────────────────────────
+# librespot manages ffmpeg's lifecycle per track. May still skip if
+# librespot consumes data faster than real-time.
 run_subprocess() {
   FFMPEG_CMD="ffmpeg -loglevel warning -f s16le -ar 44100 -ac 2 -i pipe:0 -af aresample=async=1 -f mp3 -b:a ${BITRATE} -flush_packets 1 -content_type audio/mpeg ${ICECAST_URL}"
   librespot "${librespot_base_args[@]}" \
@@ -61,16 +90,12 @@ run_subprocess() {
     --device "${FFMPEG_CMD}"
 }
 
-# ── Pipe backend (fallback) ─────────────────────────────────────────────────
-# Continuous pipe from librespot to ffmpeg via a FIFO. Less clean on track
-# transitions but works if subprocess backend has issues. Uses async
-# resampling and flush to minimize blocking.
+# ── Pipe backend (legacy fallback) ──────────────────────────────────────────
 run_pipe() {
   FIFO="/tmp/librespot-fifo"
   rm -f "${FIFO}"
   mkfifo "${FIFO}"
 
-  # Start ffmpeg reading from FIFO in background
   ffmpeg -loglevel warning \
     -f s16le -ar 44100 -ac 2 -i "${FIFO}" \
     -af aresample=async=1 \
@@ -80,24 +105,26 @@ run_pipe() {
     "${ICECAST_URL}" &
   FFMPEG_PID=$!
 
-  # Start librespot writing to FIFO
   librespot "${librespot_base_args[@]}" \
     --backend pipe \
     > "${FIFO}"
 
-  # If librespot exits, clean up ffmpeg
   kill "${FFMPEG_PID}" 2>/dev/null || true
   wait "${FFMPEG_PID}" 2>/dev/null || true
   rm -f "${FIFO}"
 }
 
-# Restart loop - bring the device back if the pipeline ever dies
+# Restart loop
 while true; do
-  if [ "${BACKEND}" = "subprocess" ]; then
-    run_subprocess
-  else
-    run_pipe
-  fi
+  case "${BACKEND}" in
+    alsa)       run_alsa ;;
+    subprocess) run_subprocess ;;
+    pipe)       run_pipe ;;
+    *)
+      echo "entrypoint: unknown backend '${BACKEND}', falling back to alsa" >&2
+      run_alsa
+      ;;
+  esac
 
   echo "entrypoint: pipeline exited, restarting in 3s..." >&2
   sleep 3
