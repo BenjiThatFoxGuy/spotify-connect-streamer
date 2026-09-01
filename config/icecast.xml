@@ -1,0 +1,65 @@
+<!--
+  Reference Icecast2 configuration for this stack.
+
+  The `icecast` service in docker-compose.yml runs the infiniteproject/icecast
+  image, which builds its own /etc/icecast2/icecast.xml at container start
+  from the same environment variables used below (ICECAST_SOURCE_PASSWORD,
+  ICECAST_ADMIN_PASSWORD, ICECAST_RELAY_PASSWORD, ...). This file is kept in
+  the repo as a human-readable reference for those values, and as a
+  drop-in config if you'd rather run `icecast2` directly (bare metal or a
+  different image) instead of through that image's own templating.
+
+  Values below use ${VAR} placeholders matching .env.example; substitute
+  them yourself (e.g. with `envsubst`) if you use this file directly.
+-->
+<icecast>
+    <location>${ICECAST_LOCATION:-Earth}</location>
+    <admin>${ICECAST_ADMIN_EMAIL:-admin@example.com}</admin>
+
+    <limits>
+        <clients>${ICECAST_MAX_CLIENTS:-100}</clients>
+        <sources>${ICECAST_MAX_SOURCES:-2}</sources>
+        <queue-size>524288</queue-size>
+        <client-timeout>30</client-timeout>
+        <header-timeout>15</header-timeout>
+        <source-timeout>10</source-timeout>
+        <burst-on-connect>1</burst-on-connect>
+        <burst-size>65536</burst-size>
+    </limits>
+
+    <authentication>
+        <!-- Used by the streamer service to push audio in -->
+        <source-password>${ICECAST_SOURCE_PASSWORD}</source-password>
+        <!-- Not used in this POC, but Icecast requires a value -->
+        <relay-password>${ICECAST_RELAY_PASSWORD}</relay-password>
+        <admin-user>${ICECAST_ADMIN_USERNAME:-admin}</admin-user>
+        <admin-password>${ICECAST_ADMIN_PASSWORD}</admin-password>
+    </authentication>
+
+    <hostname>${ICECAST_HOSTNAME:-localhost}</hostname>
+
+    <listen-socket>
+        <port>8000</port>
+    </listen-socket>
+
+    <fileserve>1</fileserve>
+
+    <paths>
+        <basedir>/usr/share/icecast2</basedir>
+        <logdir>/var/log/icecast2</logdir>
+        <webroot>/usr/share/icecast2/web</webroot>
+        <adminroot>/usr/share/icecast2/admin</adminroot>
+        <alias source="/" destination="/status.xsl"/>
+    </paths>
+
+    <logging>
+        <accesslog>access.log</accesslog>
+        <errorlog>error.log</errorlog>
+        <loglevel>3</loglevel>
+        <logsize>10000</logsize>
+    </logging>
+
+    <security>
+        <chroot>0</chroot>
+    </security>
+</icecast>

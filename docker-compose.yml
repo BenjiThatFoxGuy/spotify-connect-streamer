@@ -1,0 +1,37 @@
+services:
+  icecast:
+    image: infiniteproject/icecast
+    container_name: spotify-streamer-icecast
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-hackme}"
+      ICECAST_ADMIN_PASSWORD: "${ICECAST_ADMIN_PASSWORD:-hackme}"
+      ICECAST_RELAY_PASSWORD: "${ICECAST_RELAY_PASSWORD:-hackme}"
+      ICECAST_MAX_CLIENTS: "100"
+      ICECAST_MAX_SOURCES: "2"
+
+  streamer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spotify-streamer
+    restart: unless-stopped
+    depends_on:
+      - icecast
+    # Zeroconf (LAN) discovery needs to see the real network to be found by
+    # the Spotify app, so we run this service on the host network instead of
+    # the default bridge. If you're using remote (username/password) mode
+    # only, you can drop this and rely on normal bridge networking + port
+    # publishing instead.
+    network_mode: host
+    environment:
+      DEVICE_NAME: "${DEVICE_NAME:-Stream Output}"
+      MOUNT_POINT: "${MOUNT_POINT:-stream.mp3}"
+      ICECAST_HOST: "${ICECAST_HOST:-localhost}"
+      ICECAST_PORT: "${ICECAST_PORT:-8000}"
+      ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-hackme}"
+      LIBRESPOT_EXTRA_ARGS: "${LIBRESPOT_EXTRA_ARGS:-}"
+      SPOTIFY_USERNAME: "${SPOTIFY_USERNAME:-}"
+      SPOTIFY_PASSWORD: "${SPOTIFY_PASSWORD:-}"
