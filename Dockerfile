@@ -13,6 +13,13 @@ WORKDIR /build
 # Shallow-clone the dev branch for latest Connect protocol fixes.
 RUN git clone --depth 1 --branch dev https://github.com/librespot-org/librespot.git .
 
+# Patch: allow non-premium accounts. Upstream blocks free accounts
+# voluntarily (Spotify doesn't enforce it). Replace exit(1) with a warning.
+RUN sed -i 's/error!("librespot does not support {account_type:?} accounts.");/warn!("Account type is {account_type:?}, not premium. Some features may be limited.");/' core/src/session.rs \
+ && sed -i '/Please support Spotify and your artists/d' core/src/session.rs \
+ && sed -i '/TODO: logout instead of exiting/d' core/src/session.rs \
+ && sed -i '/exit(1);/d' core/src/session.rs
+
 # Build with ALSA backend (for snd-aloop real-time pacing),
 # rustls (no system OpenSSL), and pure-Rust mDNS (no Avahi).
 # Pipe and subprocess backends are always included.
