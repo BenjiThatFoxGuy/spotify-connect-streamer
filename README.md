@@ -1,4 +1,6 @@
-# spotify-connect-streamer
+# spotify-connect-streamer (legacy)
+
+> **This project is being rewritten in Go as [spotify-connect-streamer-ng](https://github.com/BenjiThatFoxGuy/spotify-connect-streamer-ng).** This Docker-based version works but is a quick fix-up of an old project. The NG version is a single Go binary with no Docker dependency.
 
 A proof-of-concept that turns Spotify Connect audio into a plain HTTP MP3
 stream, so anything that can play an internet radio URL can play whatever
