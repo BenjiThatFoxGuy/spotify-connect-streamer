@@ -26,12 +26,20 @@ services:
     # only, you can drop this and rely on normal bridge networking + port
     # publishing instead.
     network_mode: host
+    volumes:
+      - spot-cache:/tmp/spot-cache
     environment:
       DEVICE_NAME: "${DEVICE_NAME:-Stream Output}"
       MOUNT_POINT: "${MOUNT_POINT:-stream.mp3}"
       ICECAST_HOST: "${ICECAST_HOST:-localhost}"
       ICECAST_PORT: "${ICECAST_PORT:-8000}"
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-hackme}"
+      CACHE_DIR: "/tmp/spot-cache"
+      BACKEND: "${BACKEND:-subprocess}"
+      MP3_BITRATE: "${MP3_BITRATE:-192k}"
       LIBRESPOT_EXTRA_ARGS: "${LIBRESPOT_EXTRA_ARGS:-}"
       SPOTIFY_USERNAME: "${SPOTIFY_USERNAME:-}"
       SPOTIFY_PASSWORD: "${SPOTIFY_PASSWORD:-}"
+
+volumes:
+  spot-cache:

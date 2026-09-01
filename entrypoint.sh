@@ -23,10 +23,15 @@ fi
 ICECAST_URL="icecast://source:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/${MOUNT_POINT}"
 
 # Build the base librespot argument list.
+CACHE_DIR="${CACHE_DIR:-/tmp/spot-cache}"
+mkdir -p "${CACHE_DIR}"
+
 librespot_base_args=(
   --name "${DEVICE_NAME}"
   --initial-volume 100
   --enable-volume-normalisation
+  --cache "${CACHE_DIR}"
+  --disable-gapless
 )
 
 if [ -n "${SPOTIFY_USERNAME:-}" ] && [ -n "${SPOTIFY_PASSWORD:-}" ]; then
