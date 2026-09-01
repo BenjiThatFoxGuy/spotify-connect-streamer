@@ -18,6 +18,7 @@ BITRATE="${MP3_BITRATE:-320k}"
 CACHE_DIR="${CACHE_DIR:-/tmp/spot-cache}"
 ALSA_LOOPBACK_OUT="${ALSA_LOOPBACK_OUT:-hw:Loopback,0,0}"
 ALSA_LOOPBACK_IN="${ALSA_LOOPBACK_IN:-hw:Loopback,1,0}"
+DEVICE_TYPE="${DEVICE_TYPE:-speaker}"
 
 mkdir -p "${CACHE_DIR}"
 
@@ -31,6 +32,7 @@ ICECAST_URL="icecast://source:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECA
 # Base librespot args (shared across all backends)
 librespot_base_args=(
   --name "${DEVICE_NAME}"
+  --device-type "${DEVICE_TYPE}"
   --initial-volume 100
   --enable-volume-normalisation
   --cache "${CACHE_DIR}"
@@ -40,8 +42,39 @@ librespot_base_args=(
 AUTH_MODE="${AUTH_MODE:-zeroconf}"
 case "${AUTH_MODE}" in
   device-auth)
-    echo "entrypoint: starting in device-auth mode — check logs for pairing code, then visit spotify.com/pair" >&2
     librespot_base_args+=(--enable-device-auth)
+    # If no cached credentials, run librespot standalone first to pair.
+    # The pairing code gets printed to stderr (visible in logs).
+    # Once paired, the token is cached and subsequent starts skip this.
+    if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
+      echo "entrypoint: no cached credentials found. running initial pairing..." >&2
+      echo "entrypoint: visit spotify.com/pair and enter the code shown below:" >&2
+      timeout 120 librespot \
+        --name "${DEVICE_NAME}" \
+        --device-type "${DEVICE_TYPE}" \
+        --cache "${CACHE_DIR}" \
+        --enable-device-auth \
+        --backend pipe > /dev/null &
+      PAIR_PID=$!
+      # Wait for credentials to appear
+      for i in $(seq 1 120); do
+        if [ -f "${CACHE_DIR}/credentials.json" ]; then
+          echo "entrypoint: pairing successful! credentials cached." >&2
+          kill "${PAIR_PID}" 2>/dev/null || true
+          wait "${PAIR_PID}" 2>/dev/null || true
+          break
+        fi
+        sleep 1
+      done
+      if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
+        echo "entrypoint: pairing timed out after 120s. continuing anyway..." >&2
+        kill "${PAIR_PID}" 2>/dev/null || true
+        wait "${PAIR_PID}" 2>/dev/null || true
+      fi
+    else
+      echo "entrypoint: cached credentials found, skipping pairing" >&2
+    fi
+    echo "entrypoint: starting in device-auth mode" >&2
     ;;
   oauth)
     echo "entrypoint: starting in OAuth mode (needs browser access on port ${OAUTH_PORT:-8888})" >&2

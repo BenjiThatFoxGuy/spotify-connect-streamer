@@ -34,6 +34,7 @@ services:
       - /dev/snd:/dev/snd
     environment:
       DEVICE_NAME: "${DEVICE_NAME:-Stream Output}"
+      DEVICE_TYPE: "${DEVICE_TYPE:-speaker}"
       MOUNT_POINT: "${MOUNT_POINT:-stream.mp3}"
       ICECAST_HOST: "${ICECAST_HOST:-localhost}"
       ICECAST_PORT: "${ICECAST_PORT:-8000}"
