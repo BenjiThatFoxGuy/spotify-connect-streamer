@@ -13,7 +13,7 @@ DEVICE_NAME="${DEVICE_NAME:-Stream Output}"
 MOUNT_POINT="${MOUNT_POINT:-stream.mp3}"
 ICECAST_HOST="${ICECAST_HOST:-icecast}"
 ICECAST_PORT="${ICECAST_PORT:-8000}"
-BACKEND="${BACKEND:-alsa}"
+BACKEND="${BACKEND:-pipe-pv}"
 BITRATE="${MP3_BITRATE:-192k}"
 CACHE_DIR="${CACHE_DIR:-/tmp/spot-cache}"
 ALSA_LOOPBACK_OUT="${ALSA_LOOPBACK_OUT:-hw:Loopback,0,0}"
@@ -80,6 +80,25 @@ run_alsa() {
   wait "${FFMPEG_PID}" 2>/dev/null || true
 }
 
+# ── Rate-limited pipe backend (preferred) ───────────────────────────────────
+# Uses pv to throttle the pipe to real-time playback speed (176400 bytes/sec
+# = 44100Hz * 2ch * 2bytes). This prevents librespot from downloading tracks
+# faster than playback, which would cause Spotify to skip. No kernel modules
+# or ALSA devices needed - pure userspace rate limiting.
+run_pipe_pv() {
+  echo "entrypoint: using rate-limited pipe (pv @ 176400 B/s)" >&2
+  librespot "${librespot_base_args[@]}" \
+    --backend pipe \
+    | pv -qL 176400 \
+    | ffmpeg -loglevel warning \
+      -f s16le -ar 44100 -ac 2 -i pipe:0 \
+      -af aresample=async=1 \
+      -f mp3 -b:a "${BITRATE}" \
+      -flush_packets 1 \
+      -content_type audio/mpeg \
+      "${ICECAST_URL}"
+}
+
 # ── Subprocess backend ──────────────────────────────────────────────────────
 # librespot manages ffmpeg's lifecycle per track. May still skip if
 # librespot consumes data faster than real-time.
@@ -117,12 +136,13 @@ run_pipe() {
 # Restart loop
 while true; do
   case "${BACKEND}" in
+    pipe-pv)    run_pipe_pv ;;
     alsa)       run_alsa ;;
     subprocess) run_subprocess ;;
     pipe)       run_pipe ;;
     *)
-      echo "entrypoint: unknown backend '${BACKEND}', falling back to alsa" >&2
-      run_alsa
+      echo "entrypoint: unknown backend '${BACKEND}', falling back to pipe-pv" >&2
+      run_pipe_pv
       ;;
   esac
 

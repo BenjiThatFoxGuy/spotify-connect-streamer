@@ -25,6 +25,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    pv \
     ca-certificates \
     libasound2 \
     alsa-utils \
