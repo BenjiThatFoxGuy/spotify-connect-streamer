@@ -41,6 +41,7 @@ services:
       CACHE_DIR: "/tmp/spot-cache"
       BACKEND: "${BACKEND:-pipe-pv}"
       MP3_BITRATE: "${MP3_BITRATE:-192k}"
+      AUTH_MODE: "${AUTH_MODE:-zeroconf}"
       LIBRESPOT_EXTRA_ARGS: "${LIBRESPOT_EXTRA_ARGS:-}"
       SPOTIFY_USERNAME: "${SPOTIFY_USERNAME:-}"
       SPOTIFY_PASSWORD: "${SPOTIFY_PASSWORD:-}"

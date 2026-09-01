@@ -37,12 +37,28 @@ librespot_base_args=(
   --disable-gapless
 )
 
-if [ -n "${SPOTIFY_USERNAME:-}" ] && [ -n "${SPOTIFY_PASSWORD:-}" ]; then
-  echo "entrypoint: credentials provided, starting in remote (account login) mode" >&2
-  librespot_base_args+=(--username "${SPOTIFY_USERNAME}" --password "${SPOTIFY_PASSWORD}")
-else
-  echo "entrypoint: no credentials provided, starting in LAN-only zeroconf mode" >&2
-fi
+AUTH_MODE="${AUTH_MODE:-zeroconf}"
+case "${AUTH_MODE}" in
+  device-auth)
+    echo "entrypoint: starting in device-auth mode — check logs for pairing code, then visit spotify.com/pair" >&2
+    librespot_base_args+=(--enable-device-auth)
+    ;;
+  oauth)
+    echo "entrypoint: starting in OAuth mode (needs browser access on port ${OAUTH_PORT:-8888})" >&2
+    librespot_base_args+=(--enable-oauth --oauth-port "${OAUTH_PORT:-8888}")
+    ;;
+  password)
+    if [ -n "${SPOTIFY_USERNAME:-}" ] && [ -n "${SPOTIFY_PASSWORD:-}" ]; then
+      echo "entrypoint: starting in password mode (deprecated by Spotify)" >&2
+      librespot_base_args+=(--username "${SPOTIFY_USERNAME}" --password "${SPOTIFY_PASSWORD}")
+    else
+      echo "entrypoint: password mode selected but no credentials provided, falling back to zeroconf" >&2
+    fi
+    ;;
+  zeroconf|*)
+    echo "entrypoint: starting in LAN-only zeroconf mode" >&2
+    ;;
+esac
 
 if [ -n "${LIBRESPOT_EXTRA_ARGS:-}" ]; then
   # shellcheck disable=SC2206
