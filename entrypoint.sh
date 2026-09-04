@@ -29,6 +29,9 @@ fi
 
 ICECAST_URL="icecast://source:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/${MOUNT_POINT}"
 
+# Metadata event handler script
+ONEVENT_SCRIPT="${ONEVENT_SCRIPT:-/app/config/on_event.sh}"
+
 # Base librespot args (shared across all backends)
 librespot_base_args=(
   --name "${DEVICE_NAME}"
@@ -37,6 +40,7 @@ librespot_base_args=(
   --enable-volume-normalisation
   --cache "${CACHE_DIR}"
   --disable-gapless
+  --onevent "${ONEVENT_SCRIPT}"
 )
 
 AUTH_MODE="${AUTH_MODE:-zeroconf}"

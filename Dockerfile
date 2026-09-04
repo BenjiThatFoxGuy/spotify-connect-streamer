@@ -33,6 +33,8 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     pv \
+    curl \
+    python3 \
     ca-certificates \
     libasound2 \
     alsa-utils \
@@ -42,5 +44,8 @@ COPY --from=builder /build/target/release/librespot /usr/local/bin/librespot
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+COPY config/ /app/config/
+RUN chmod +x /app/config/*.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
