@@ -97,6 +97,17 @@ case "${AUTH_MODE}" in
     ;;
 esac
 
+# Disable LAN discovery (only valid with account credentials)
+DISABLE_DISCOVERY="${DISABLE_DISCOVERY:-false}"
+if [ "${DISABLE_DISCOVERY}" = "true" ]; then
+  if [ "${AUTH_MODE}" = "zeroconf" ] || [ -z "${AUTH_MODE}" ]; then
+    echo "entrypoint: DISABLE_DISCOVERY requires an account auth mode (device-auth, oauth, or password). ignoring." >&2
+  else
+    echo "entrypoint: LAN discovery disabled - device only reachable via Spotify servers" >&2
+    librespot_base_args+=(--disable-discovery)
+  fi
+fi
+
 if [ -n "${LIBRESPOT_EXTRA_ARGS:-}" ]; then
   # shellcheck disable=SC2206
   librespot_base_args+=(${LIBRESPOT_EXTRA_ARGS})
