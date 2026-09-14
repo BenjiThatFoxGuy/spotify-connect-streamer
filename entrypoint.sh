@@ -101,7 +101,9 @@ esac
 DISABLE_DISCOVERY="${DISABLE_DISCOVERY:-false}"
 if [ "${DISABLE_DISCOVERY}" = "true" ]; then
   if [ "${AUTH_MODE}" = "zeroconf" ] || [ -z "${AUTH_MODE}" ]; then
-    echo "entrypoint: DISABLE_DISCOVERY requires an account auth mode (device-auth, oauth, or password). ignoring." >&2
+    echo "entrypoint: WARNING: DISABLE_DISCOVERY=true but AUTH_MODE is '${AUTH_MODE:-zeroconf}'." >&2
+    echo "entrypoint: WARNING: Disabling discovery without account credentials would make the device unreachable." >&2
+    echo "entrypoint: WARNING: LAN discovery will remain ENABLED. Set AUTH_MODE to device-auth, oauth, or password to use DISABLE_DISCOVERY." >&2
   else
     echo "entrypoint: LAN discovery disabled - device only reachable via Spotify servers" >&2
     librespot_base_args+=(--disable-discovery)
