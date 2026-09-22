@@ -20,6 +20,16 @@ RUN sed -i 's/error!("librespot does not support {account_type:?} accounts.");/w
  && sed -i '/TODO: logout instead of exiting/d' core/src/session.rs \
  && sed -i '/exit(1);/d' core/src/session.rs
 
+# Apply patches (OAuth multi-connection listener, 0.0.0.0 bind).
+# To regenerate after upstream changes:
+#   git clone --depth 1 --branch dev https://github.com/librespot-org/librespot /tmp/ls
+#   cd /tmp/ls && git am patches/*.patch
+#   If git am fails, resolve conflicts, then: git format-patch HEAD~N -o patches/
+COPY patches/ /patches/
+RUN git config user.email "build@dockerfile" \
+    && git config user.name "Dockerfile" \
+    && git am /patches/*.patch
+
 # Build with ALSA backend (for snd-aloop real-time pacing),
 # rustls (no system OpenSSL), and pure-Rust mDNS (no Avahi).
 # Pipe and subprocess backends are always included.

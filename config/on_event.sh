@@ -7,6 +7,7 @@
 
 ICECAST_HOST="${ICECAST_HOST:-icecast}"
 ICECAST_PORT="${ICECAST_PORT:-8000}"
+ICECAST_ADMIN_USER="${ICECAST_ADMIN_USER:-admin}"
 ICECAST_ADMIN_PASSWORD="${ICECAST_ADMIN_PASSWORD:-${ICECAST_SOURCE_PASSWORD:-hackme}}"
 MOUNT_POINT="${MOUNT_POINT:-stream.mp3}"
 
@@ -25,7 +26,7 @@ case "${PLAYER_EVENT}" in
       || echo "${SONG}" | sed 's/ /%20/g; s/&/%26/g')
 
     curl -s -o /dev/null \
-      "http://admin:${ICECAST_ADMIN_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/admin/metadata?mount=/${MOUNT_POINT}&mode=updinfo&song=${ENCODED_SONG}" \
+      "http://${ICECAST_ADMIN_USER}:${ICECAST_ADMIN_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/admin/metadata?mount=/${MOUNT_POINT}&mode=updinfo&song=${ENCODED_SONG}" \
       2>/dev/null || true
 
     echo "metadata: now playing: ${SONG}" >&2
@@ -47,7 +48,6 @@ METAEOF
     ;;
 
   playing|paused|stopped)
-    # Log state changes
     echo "metadata: ${PLAYER_EVENT} (track: ${TRACK_ID:-unknown})" >&2
     ;;
 esac
