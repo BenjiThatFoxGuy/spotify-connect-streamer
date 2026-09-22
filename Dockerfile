@@ -1,61 +1,46 @@
-# --- Stage 1: build librespot from the dev branch ---
-FROM rust:1-bookworm AS builder
+# --- Stage 1: build go-librespot ---
+FROM alpine:3.23 AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ARG GO_LIBRESPOT_REF=v0.10.0
+
+RUN apk update && apk -U --no-cache add \
+    go \
     git \
-    pkg-config \
-    cmake \
-    libasound2-dev \
-    && rm -rf /var/lib/apt/lists/*
+    alsa-lib-dev \
+    libogg-dev \
+    libvorbis-dev \
+    flac-dev \
+    mpg123-dev \
+    gcc \
+    musl-dev
 
-WORKDIR /build
+WORKDIR /src
 
-# Shallow-clone the dev branch for latest Connect protocol fixes.
-RUN git clone --depth 1 --branch dev https://github.com/librespot-org/librespot.git .
+RUN git clone --depth 1 --branch "${GO_LIBRESPOT_REF}" https://github.com/devgianlu/go-librespot.git .
+RUN CGO_ENABLED=1 go build -v -o /usr/local/bin/go-librespot ./cmd/daemon
 
-# Patch: allow non-premium accounts. Upstream blocks free accounts
-# voluntarily (Spotify doesn't enforce it). Replace exit(1) with a warning.
-RUN sed -i 's/error!("librespot does not support {account_type:?} accounts.");/warn!("Account type is {account_type:?}, not premium. Some features may be limited.");/' core/src/session.rs \
- && sed -i '/Please support Spotify and your artists/d' core/src/session.rs \
- && sed -i '/TODO: logout instead of exiting/d' core/src/session.rs \
- && sed -i '/exit(1);/d' core/src/session.rs
+# --- Stage 2: runtime image ---
+FROM alpine:3.23
 
-# Apply patches (OAuth multi-connection listener, 0.0.0.0 bind).
-# To regenerate after upstream changes:
-#   git clone --depth 1 --branch dev https://github.com/librespot-org/librespot /tmp/ls
-#   cd /tmp/ls && git am patches/*.patch
-#   If git am fails, resolve conflicts, then: git format-patch HEAD~N -o patches/
-COPY patches/ /patches/
-RUN git config user.email "build@dockerfile" \
-    && git config user.name "Dockerfile" \
-    && git am /patches/*.patch
-
-# Build with ALSA backend (for snd-aloop real-time pacing),
-# rustls (no system OpenSSL), and pure-Rust mDNS (no Avahi).
-# Pipe and subprocess backends are always included.
-RUN cargo build --release \
-    --no-default-features \
-    --features "alsa-backend rustls-tls-webpki-roots with-libmdns"
-
-# --- Stage 2: slim runtime image ---
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apk update && apk -U --no-cache add \
+    bash \
     ffmpeg \
-    pv \
     curl \
     python3 \
     ca-certificates \
-    libasound2 \
-    alsa-utils \
-    && rm -rf /var/lib/apt/lists/*
+    libpulse \
+    avahi \
+    libgcc \
+    gcompat \
+    alsa-lib \
+    && rm -rf /var/cache/apk/*
 
-COPY --from=builder /build/target/release/librespot /usr/local/bin/librespot
+COPY --from=builder /usr/local/bin/go-librespot /usr/local/bin/go-librespot
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 COPY config/ /app/config/
-RUN chmod +x /app/config/*.sh
+RUN chmod +x /app/config/*.py
 
 ENTRYPOINT ["/entrypoint.sh"]

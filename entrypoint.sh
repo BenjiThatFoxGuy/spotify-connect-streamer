@@ -1,246 +1,171 @@
 #!/usr/bin/env bash
-#
-# Streams Spotify Connect audio to icecast via ffmpeg.
-#
-# Three backend modes:
-#   alsa (default) - uses snd-aloop for real-time pacing. Prevents track skipping.
-#   subprocess     - librespot spawns ffmpeg per track. Simpler but may skip.
-#   pipe           - continuous pipe via FIFO. Legacy fallback.
-#
 set -uo pipefail
 
 DEVICE_NAME="${DEVICE_NAME:-Stream Output}"
+DEVICE_TYPE="${DEVICE_TYPE:-speaker}"
 MOUNT_POINT="${MOUNT_POINT:-stream.mp3}"
 ICECAST_HOST="${ICECAST_HOST:-icecast}"
 ICECAST_PORT="${ICECAST_PORT:-8000}"
 ICECAST_SOURCE_USERNAME="${ICECAST_SOURCE_USERNAME:-source}"
-BACKEND="${BACKEND:-pipe-pv}"
 BITRATE="${MP3_BITRATE:-320k}"
 CACHE_DIR="${CACHE_DIR:-/tmp/spot-cache}"
-ALSA_LOOPBACK_OUT="${ALSA_LOOPBACK_OUT:-hw:Loopback,0,0}"
-ALSA_LOOPBACK_IN="${ALSA_LOOPBACK_IN:-hw:Loopback,1,0}"
-DEVICE_TYPE="${DEVICE_TYPE:-speaker}"
+CONFIG_DIR="${GO_LIBRESPOT_CONFIG_DIR:-${CACHE_DIR}/go-librespot}"
+FIFO="${AUDIO_FIFO:-/tmp/go-librespot-audio.fifo}"
+API_HOST="${GO_LIBRESPOT_API_HOST:-127.0.0.1}"
+API_BIND_ADDRESS="${GO_LIBRESPOT_API_BIND_ADDRESS:-0.0.0.0}"
+API_PORT="${GO_LIBRESPOT_API_PORT:-3678}"
 
-mkdir -p "${CACHE_DIR}"
+mkdir -p "${CACHE_DIR}" "${CONFIG_DIR}"
 
 if [ -z "${ICECAST_SOURCE_PASSWORD:-}" ]; then
   echo "entrypoint: ICECAST_SOURCE_PASSWORD is not set, refusing to start" >&2
   exit 1
 fi
 
-ICECAST_URL="icecast://${ICECAST_SOURCE_USERNAME}:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/${MOUNT_POINT}"
-
-# Metadata event handler script
-ONEVENT_SCRIPT="${ONEVENT_SCRIPT:-/app/config/on_event.sh}"
-
-# Base librespot args (shared across all backends)
-librespot_base_args=(
-  --name "${DEVICE_NAME}"
-  --device-type "${DEVICE_TYPE}"
-  --initial-volume 100
-  --enable-volume-normalisation
-  --cache "${CACHE_DIR}"
-  --disable-gapless
-  --onevent "${ONEVENT_SCRIPT}"
-)
-
-AUTH_MODE="${AUTH_MODE:-zeroconf}"
-case "${AUTH_MODE}" in
-  device-auth)
-    librespot_base_args+=(--enable-device-auth)
-    # If no cached credentials, run librespot standalone first to pair.
-    # The pairing code gets printed to stderr (visible in logs).
-    # Once paired, the token is cached and subsequent starts skip this.
-    if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
-      echo "entrypoint: no cached credentials found. running initial pairing..." >&2
-      echo "entrypoint: visit spotify.com/pair and enter the code shown below:" >&2
-      timeout 120 librespot \
-        --name "${DEVICE_NAME}" \
-        --device-type "${DEVICE_TYPE}" \
-        --cache "${CACHE_DIR}" \
-        --enable-device-auth \
-        --backend pipe > /dev/null &
-      PAIR_PID=$!
-      # Wait for credentials to appear
-      for i in $(seq 1 120); do
-        if [ -f "${CACHE_DIR}/credentials.json" ]; then
-          echo "entrypoint: pairing successful! credentials cached." >&2
-          kill "${PAIR_PID}" 2>/dev/null || true
-          wait "${PAIR_PID}" 2>/dev/null || true
-          break
-        fi
-        sleep 1
-      done
-      if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
-        echo "entrypoint: pairing timed out after 120s. continuing anyway..." >&2
-        kill "${PAIR_PID}" 2>/dev/null || true
-        wait "${PAIR_PID}" 2>/dev/null || true
-      fi
-    else
-      echo "entrypoint: cached credentials found, skipping pairing" >&2
-    fi
-    echo "entrypoint: starting in device-auth mode" >&2
-    ;;
-  oauth)
-    librespot_base_args+=(--enable-oauth --oauth-port "${OAUTH_PORT:-8888}")
-    # Run librespot standalone first if no cached credentials exist.
-    # This prevents the streaming pipeline from crashing (icecast 404)
-    # and killing the OAuth flow mid-login.
-    if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
-      echo "entrypoint: no cached credentials. running standalone OAuth login on port ${OAUTH_PORT:-8888}..." >&2
-      echo "entrypoint: open the login URL printed below in your browser" >&2
-      timeout 300 librespot \
-        "${librespot_base_args[@]}" \
-        --backend pipe &
-      AUTH_PID=$!
-      # Wait for credentials to appear (librespot caches them on successful login)
-      for i in $(seq 1 300); do
-        if [ -f "${CACHE_DIR}/credentials.json" ]; then
-          echo "entrypoint: OAuth login successful! credentials cached." >&2
-          kill "${AUTH_PID}" 2>/dev/null || true
-          wait "${AUTH_PID}" 2>/dev/null || true
-          break
-        fi
-        sleep 1
-      done
-      if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
-        echo "entrypoint: OAuth login timed out after 300s. starting pipeline anyway..." >&2
-        kill "${AUTH_PID}" 2>/dev/null || true
-        wait "${AUTH_PID}" 2>/dev/null || true
-      fi
-    else
-      echo "entrypoint: cached credentials found, skipping OAuth login" >&2
-    fi
-    echo "entrypoint: starting in OAuth mode" >&2
-    ;;
-  password)
-    if [ -n "${SPOTIFY_USERNAME:-}" ] && [ -n "${SPOTIFY_PASSWORD:-}" ]; then
-      echo "entrypoint: starting in password mode (deprecated by Spotify)" >&2
-      librespot_base_args+=(--username "${SPOTIFY_USERNAME}" --password "${SPOTIFY_PASSWORD}")
-    else
-      echo "entrypoint: password mode selected but no credentials provided, falling back to zeroconf" >&2
-    fi
-    ;;
-  zeroconf|*)
-    echo "entrypoint: starting in LAN-only zeroconf mode" >&2
+case "${BITRATE}" in
+  96k|96) GO_BITRATE=96 ;;
+  160k|160) GO_BITRATE=160 ;;
+  320k|320) GO_BITRATE=320 ;;
+  *)
+    echo "entrypoint: unsupported MP3_BITRATE='${BITRATE}', use 96k, 160k, or 320k" >&2
+    exit 1
     ;;
 esac
 
-# Disable LAN discovery (only valid with account credentials)
+AUTH_MODE="${AUTH_MODE:-zeroconf}"
+case "${AUTH_MODE}" in
+  zeroconf) CREDENTIALS_TYPE="zeroconf" ;;
+  device-auth|device_auth) CREDENTIALS_TYPE="device_auth" ;;
+  oauth|interactive) CREDENTIALS_TYPE="interactive" ;;
+  password)
+    echo "entrypoint: AUTH_MODE=password is not supported by go-librespot; use device-auth, oauth, or zeroconf" >&2
+    exit 1
+    ;;
+  *)
+    echo "entrypoint: unknown AUTH_MODE='${AUTH_MODE}', falling back to zeroconf" >&2
+    CREDENTIALS_TYPE="zeroconf"
+    ;;
+esac
+
 DISABLE_DISCOVERY="${DISABLE_DISCOVERY:-false}"
-if [ "${DISABLE_DISCOVERY}" = "true" ]; then
-  if [ "${AUTH_MODE}" = "zeroconf" ] || [ -z "${AUTH_MODE}" ]; then
-    echo "entrypoint: WARNING: DISABLE_DISCOVERY=true but AUTH_MODE is '${AUTH_MODE:-zeroconf}'." >&2
-    echo "entrypoint: WARNING: Disabling discovery without account credentials would make the device unreachable." >&2
-    echo "entrypoint: WARNING: LAN discovery will remain ENABLED. Set AUTH_MODE to device-auth, oauth, or password to use DISABLE_DISCOVERY." >&2
-  else
-    echo "entrypoint: LAN discovery disabled - device only reachable via Spotify servers" >&2
-    librespot_base_args+=(--disable-discovery)
-  fi
+if [ "${CREDENTIALS_TYPE}" = "zeroconf" ]; then
+  ZEROCONF_ENABLED=true
+elif [ "${DISABLE_DISCOVERY}" = "true" ]; then
+  ZEROCONF_ENABLED=false
+else
+  ZEROCONF_ENABLED=true
 fi
 
-if [ -n "${LIBRESPOT_EXTRA_ARGS:-}" ]; then
-  # shellcheck disable=SC2206
-  librespot_base_args+=(${LIBRESPOT_EXTRA_ARGS})
+if [ "${DISABLE_DISCOVERY}" = "true" ] && [ "${CREDENTIALS_TYPE}" = "zeroconf" ]; then
+  echo "entrypoint: WARNING: DISABLE_DISCOVERY=true is ignored with AUTH_MODE=zeroconf" >&2
 fi
 
-echo "entrypoint: backend=${BACKEND}, streaming to ${ICECAST_URL}" >&2
+export DEVICE_NAME DEVICE_TYPE CONFIG_DIR FIFO API_BIND_ADDRESS API_PORT GO_BITRATE CREDENTIALS_TYPE ZEROCONF_ENABLED CACHE_DIR
+export ZEROCONF_BACKEND="${GO_LIBRESPOT_ZEROCONF_BACKEND:-builtin}"
+export OAUTH_PORT="${OAUTH_PORT:-8888}"
+export PERSIST_ZEROCONF_CREDENTIALS="${PERSIST_ZEROCONF_CREDENTIALS:-false}"
+export NORMALISATION_DISABLED="${NORMALISATION_DISABLED:-false}"
+export DISABLE_AUTOPLAY="${DISABLE_AUTOPLAY:-false}"
+export CROSSFADE_DURATION="${CROSSFADE_DURATION:-0}"
+export PREFER_FIREWALL_FRIENDLY_PORTS="${PREFER_FIREWALL_FRIENDLY_PORTS:-false}"
 
-# ── ALSA loopback backend (preferred) ───────────────────────────────────────
-# Uses snd-aloop to pace audio output at real-time rate. This prevents
-# librespot from downloading tracks faster than playback speed, which
-# would cause Spotify to think the track finished and skip ahead.
-# Requires: sudo modprobe snd-aloop on the host, device shared into container.
-run_alsa() {
-  echo "entrypoint: using ALSA loopback (${ALSA_LOOPBACK_OUT} -> ${ALSA_LOOPBACK_IN})" >&2
+python3 <<'PY'
+import json
+import os
 
-  # Start ffmpeg reading from the loopback capture side in background
-  ffmpeg -loglevel warning \
-    -f alsa -i "${ALSA_LOOPBACK_IN}" \
-    -af aresample=async=1 \
-    -f mp3 -b:a "${BITRATE}" \
-    -flush_packets 1 \
-    -content_type audio/mpeg \
-    "${ICECAST_URL}" &
-  FFMPEG_PID=$!
+def env_bool(name):
+    return str(os.environ.get(name, "false")).lower() in {"1", "true", "yes", "on"}
 
-  # Start librespot writing to the loopback playback side (real-time paced)
-  librespot "${librespot_base_args[@]}" \
-    --backend alsa \
-    --device "${ALSA_LOOPBACK_OUT}" \
-    --format S16
+def line(key, value, indent=0):
+    prefix = " " * indent
+    if isinstance(value, bool):
+        rendered = "true" if value else "false"
+    elif isinstance(value, int):
+        rendered = str(value)
+    else:
+        rendered = json.dumps(value)
+    return f"{prefix}{key}: {rendered}"
 
-  # If librespot exits, clean up ffmpeg
-  kill "${FFMPEG_PID}" 2>/dev/null || true
-  wait "${FFMPEG_PID}" 2>/dev/null || true
-}
+config_dir = os.environ["CONFIG_DIR"]
+credentials_type = os.environ["CREDENTIALS_TYPE"]
+lines = [
+    line("log_level", os.environ.get("GO_LIBRESPOT_LOG_LEVEL", "info")),
+    line("device_name", os.environ["DEVICE_NAME"]),
+    line("device_type", os.environ["DEVICE_TYPE"]),
+    line("audio_backend", "pipe"),
+    line("audio_output_pipe", os.environ["FIFO"]),
+    line("audio_output_pipe_format", "s16le"),
+    line("audio_output_pipe_wait_for_reader", True),
+    line("bitrate", int(os.environ["GO_BITRATE"])),
+    line("initial_volume", int(os.environ.get("INITIAL_VOLUME", "100"))),
+    line("ignore_last_volume", env_bool("IGNORE_LAST_VOLUME")),
+    line("external_volume", env_bool("EXTERNAL_VOLUME")),
+    line("normalisation_disabled", env_bool("NORMALISATION_DISABLED")),
+    line("disable_autoplay", env_bool("DISABLE_AUTOPLAY")),
+    line("crossfade_duration", int(os.environ["CROSSFADE_DURATION"])),
+    line("prefer_firewall_friendly_ports", env_bool("PREFER_FIREWALL_FRIENDLY_PORTS")),
+    line("zeroconf_enabled", env_bool("ZEROCONF_ENABLED")),
+    line("zeroconf_backend", os.environ["ZEROCONF_BACKEND"]),
+    "server:",
+    line("enabled", True, 2),
+    line("address", os.environ["API_BIND_ADDRESS"], 2),
+    line("port", int(os.environ["API_PORT"]), 2),
+    "cache:",
+    line("enabled", True, 2),
+    line("dir", os.path.join(os.environ["CACHE_DIR"], "audio-cache"), 2),
+    line("size_limit", os.environ.get("GO_LIBRESPOT_CACHE_SIZE", "1GB"), 2),
+    "credentials:",
+    line("type", credentials_type, 2),
+]
 
-# ── Rate-limited pipe backend (preferred) ───────────────────────────────────
-# Uses pv to throttle the pipe to real-time playback speed (176400 bytes/sec
-# = 44100Hz * 2ch * 2bytes). This prevents librespot from downloading tracks
-# faster than playback, which would cause Spotify to skip. No kernel modules
-# or ALSA devices needed - pure userspace rate limiting.
-run_pipe_pv() {
-  echo "entrypoint: using rate-limited pipe (pv @ 176400 B/s)" >&2
-  librespot "${librespot_base_args[@]}" \
-    --backend pipe \
-    | pv -qL 176400 \
-    | ffmpeg -loglevel warning \
-      -f s16le -ar 44100 -ac 2 -i pipe:0 \
-      -af aresample=async=1 \
-      -f mp3 -b:a "${BITRATE}" \
-      -flush_packets 1 \
-      -content_type audio/mpeg \
-      "${ICECAST_URL}"
-}
+if credentials_type == "interactive":
+    lines.extend(["  interactive:", line("callback_port", int(os.environ["OAUTH_PORT"]), 4)])
+elif credentials_type == "zeroconf":
+    lines.extend(["  zeroconf:", line("persist_credentials", env_bool("PERSIST_ZEROCONF_CREDENTIALS"), 4)])
+elif credentials_type == "device_auth":
+    lines.append("  device_auth: {}")
 
-# ── Subprocess backend ──────────────────────────────────────────────────────
-# librespot manages ffmpeg's lifecycle per track. May still skip if
-# librespot consumes data faster than real-time.
-run_subprocess() {
-  FFMPEG_CMD="ffmpeg -loglevel warning -f s16le -ar 44100 -ac 2 -i pipe:0 -af aresample=async=1 -f mp3 -b:a ${BITRATE} -flush_packets 1 -content_type audio/mpeg ${ICECAST_URL}"
-  librespot "${librespot_base_args[@]}" \
-    --backend subprocess \
-    --device "${FFMPEG_CMD}"
-}
+with open(os.path.join(config_dir, "config.yml"), "w", encoding="utf-8") as config_file:
+    config_file.write("\n".join(lines) + "\n")
+PY
 
-# ── Pipe backend (legacy fallback) ──────────────────────────────────────────
-run_pipe() {
-  FIFO="/tmp/librespot-fifo"
-  rm -f "${FIFO}"
-  mkfifo "${FIFO}"
+rm -f "${FIFO}"
+mkfifo "${FIFO}"
 
-  ffmpeg -loglevel warning \
-    -f s16le -ar 44100 -ac 2 -i "${FIFO}" \
-    -af aresample=async=1 \
-    -f mp3 -b:a "${BITRATE}" \
-    -flush_packets 1 \
-    -content_type audio/mpeg \
-    "${ICECAST_URL}" &
-  FFMPEG_PID=$!
+ICECAST_URL="icecast://${ICECAST_SOURCE_USERNAME}:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/${MOUNT_POINT}"
+API_URL="http://${API_HOST}:${API_PORT}"
 
-  librespot "${librespot_base_args[@]}" \
-    --backend pipe \
-    > "${FIFO}"
-
-  kill "${FFMPEG_PID}" 2>/dev/null || true
-  wait "${FFMPEG_PID}" 2>/dev/null || true
+cleanup() {
+  trap - INT TERM EXIT
+  kill "${GO_LIBRESPOT_PID:-}" "${FFMPEG_PID:-}" "${METADATA_PID:-}" 2>/dev/null || true
+  wait "${GO_LIBRESPOT_PID:-}" "${FFMPEG_PID:-}" "${METADATA_PID:-}" 2>/dev/null || true
   rm -f "${FIFO}"
 }
+trap cleanup INT TERM EXIT
 
-# Restart loop
-while true; do
-  case "${BACKEND}" in
-    pipe-pv)    run_pipe_pv ;;
-    alsa)       run_alsa ;;
-    subprocess) run_subprocess ;;
-    pipe)       run_pipe ;;
-    *)
-      echo "entrypoint: unknown backend '${BACKEND}', falling back to pipe-pv" >&2
-      run_pipe_pv
-      ;;
-  esac
+echo "entrypoint: starting go-librespot auth=${AUTH_MODE} bitrate=${GO_BITRATE}kbps config=${CONFIG_DIR}" >&2
+go-librespot --config_dir "${CONFIG_DIR}" &
+GO_LIBRESPOT_PID=$!
 
-  echo "entrypoint: pipeline exited, restarting in 3s..." >&2
-  sleep 3
-done
+echo "entrypoint: streaming FIFO ${FIFO} to ${ICECAST_URL}" >&2
+ffmpeg -loglevel warning \
+  -f s16le -ar 44100 -ac 2 -i "${FIFO}" \
+  -af aresample=async=1 \
+  -f mp3 -b:a "${BITRATE}" \
+  -flush_packets 1 \
+  -content_type audio/mpeg \
+  "${ICECAST_URL}" &
+FFMPEG_PID=$!
+
+python3 /app/config/metadata_poller.py &
+METADATA_PID=$!
+
+if [ "${CREDENTIALS_TYPE}" = "device_auth" ]; then
+  echo "entrypoint: device auth selected; pairing details will be logged and exposed at ${API_URL}/auth/code while pending" >&2
+elif [ "${CREDENTIALS_TYPE}" = "interactive" ]; then
+  echo "entrypoint: interactive OAuth selected; callback port is ${OAUTH_PORT}" >&2
+fi
+
+wait -n "${GO_LIBRESPOT_PID}" "${FFMPEG_PID}" "${METADATA_PID}"
+echo "entrypoint: a child process exited, shutting down" >&2
+exit 1

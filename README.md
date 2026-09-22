@@ -1,25 +1,18 @@
-# spotify-connect-streamer (legacy)
+# spotify-connect-streamer
 
-> **This project is being rewritten in Go as [spotify-connect-streamer-ng](https://github.com/BenjiThatFoxGuy/spotify-connect-streamer-ng).** This Docker-based version works but is a quick fix-up of an old project. The NG version is a single Go binary with no Docker dependency.
-
-A proof-of-concept that turns Spotify Connect audio into a plain HTTP MP3
-stream, so anything that can play an internet radio URL can play whatever
-you cast to it from Spotify.
+Dockerized Spotify Connect to Icecast streaming, using
+[go-librespot](https://github.com/devgianlu/go-librespot) so Spotify DJ playback,
+including narration, can flow through the same HTTP MP3 stream.
 
 ```
-Spotify App -> librespot (Connect device) -> raw PCM pipe -> ffmpeg (MP3 encode) -> icecast2 -> HTTP stream
+Spotify App -> go-librespot (Connect device + DJ support) -> FIFO -> ffmpeg -> Icecast -> HTTP stream
 ```
 
-- **librespot** presents itself as a Spotify Connect device and outputs the
-  raw decoded audio (16-bit PCM, 44.1kHz, stereo) instead of playing it
-  through a sound card.
-- **ffmpeg** reads that raw PCM straight from the pipe and encodes it to
-  MP3 in real time.
-- **icecast2** receives the MP3 as a live source and serves it to any
-  number of HTTP listeners.
+`go-librespot` presents itself as a Spotify Connect device and writes decoded
+16-bit PCM audio to a named pipe. `ffmpeg` reads that pipe in real time, encodes
+MP3, and pushes it into Icecast.
 
-This is a POC: it works, but it hasn't been hardened for production use
-(no TLS, default-ish passwords, no auth on the listener side, etc).
+Spotify Premium is expected for Spotify Connect and DJ support.
 
 ## Quick start
 
@@ -34,7 +27,7 @@ Once it's running:
 
 - The Connect device ("Stream Output" by default) shows up in the Spotify
   app's device picker on any device on the same LAN.
-- Cast something to it.
+- Cast music, podcasts, or DJ to it.
 - Open `http://<host>:8000/stream.mp3` in a browser, VLC, or any HTTP
   audio player to hear it.
 - Icecast's status page is at `http://<host>:8000/`.
@@ -47,36 +40,40 @@ All configuration is via environment variables, set in `.env` (copy
 
 | Variable                   | Default         | Meaning                                              |
 |-----------------------------|-----------------|-------------------------------------------------------|
-| `DEVICE_NAME`               | `Stream Output` | Name shown in the Spotify Connect device picker       |
-| `ICECAST_SOURCE_PASSWORD`   | `hackme`        | Password the streamer uses to push audio into icecast |
-| `ICECAST_ADMIN_PASSWORD`    | `hackme`        | Password for icecast's `/admin` web UI                |
-| `ICECAST_RELAY_PASSWORD`    | `hackme`        | Required by icecast, unused in this POC               |
-| `MOUNT_POINT`                | `stream.mp3`    | Path the stream is published under (`/stream.mp3`)    |
-| `LIBRESPOT_EXTRA_ARGS`      | (empty)         | Extra flags passed straight through to librespot       |
-| `SPOTIFY_USERNAME`          | (unset)         | See "Dual mode" below                                 |
-| `SPOTIFY_PASSWORD`          | (unset)         | See "Dual mode" below                                 |
+| `DEVICE_NAME` | `Stream Output` | Name shown in Spotify's device picker |
+| `DEVICE_TYPE` | `speaker` | Spotify Connect device icon/type |
+| `ICECAST_SOURCE_PASSWORD` | `hackme` | Password the streamer uses to push audio into Icecast |
+| `ICECAST_ADMIN_PASSWORD` | `hackme` | Password for Icecast admin metadata updates |
+| `ICECAST_RELAY_PASSWORD` | `hackme` | Required by the Icecast image |
+| `MOUNT_POINT` | `stream.mp3` | Path the stream is published under (`/stream.mp3`) |
+| `MP3_BITRATE` | `320k` | Icecast MP3 bitrate: `96k`, `160k`, or `320k` |
+| `AUTH_MODE` | `zeroconf` | `zeroconf`, `device-auth`, or `oauth` |
+| `DISABLE_DISCOVERY` | `false` | Disable mDNS after account auth |
+| `GO_LIBRESPOT_API_PORT` | `3678` | Local go-librespot API port for metadata polling |
+| `GO_LIBRESPOT_ZEROCONF_BACKEND` | `builtin` | `builtin` or `avahi` mDNS registration |
+| `OAUTH_PORT` | `8888` | Interactive OAuth callback port |
 
 Change the default passwords before exposing port 8000 beyond your own
 machine — the icecast admin UI and source password are the only things
 gatekeeping this stack.
 
-## Dual mode: LAN vs remote
+## Auth modes
 
-This stack can run in two modes, chosen automatically based on whether
-Spotify credentials are set:
+- `zeroconf` keeps the device LAN-discoverable and does not require account
+  credentials in environment variables.
+- `device-auth` prints a pairing URL/code for spotify.com/pair and stores the
+  resulting credentials in the `spot-cache` Docker volume.
+- `oauth` starts go-librespot's interactive browser flow using `OAUTH_PORT` as
+  the callback port.
 
-- **LAN mode (default, safer)** — leave `SPOTIFY_USERNAME` /
-  `SPOTIFY_PASSWORD` unset in `.env`. librespot advertises itself via
-  zeroconf (mDNS) and only shows up as a Connect target for Spotify apps on
-  the same local network. No account credentials are stored or sent
-  anywhere.
+The old username/password mode is intentionally gone. go-librespot supports
+modern Spotify auth flows instead.
 
-- **Remote mode** — set both `SPOTIFY_USERNAME` and `SPOTIFY_PASSWORD` in
-  `.env`. librespot logs in with that account directly, so the device
-  shows up as a Connect target wherever that account is signed in, not
-  just on the LAN. This means the account credentials live in your `.env`
-  file and inside the running container's environment, so treat that file
-  accordingly (it's already gitignored).
+## Metadata
+
+The streamer enables go-librespot's REST API and polls `/status` to update
+Icecast metadata on track changes. The latest metadata is also written to
+`metadata.json` in the cache volume.
 
 ## How to consume the stream
 
@@ -95,14 +92,10 @@ URL.
 ## Notes
 
 - The `streamer` service runs with `network_mode: host` so that zeroconf
-  (mDNS) discovery works and the Connect device is actually visible on
-  your LAN. If you only ever use remote (credential) mode, you can switch
-  it back to normal bridge networking.
-- librespot is built from the `dev` branch of
-  [librespot-org/librespot](https://github.com/librespot-org/librespot) at
-  image build time, for the latest Spotify Connect protocol fixes. Rebuild
-  the `streamer` image (`docker compose build --no-cache streamer`)
-  periodically to pick up upstream changes.
-- If the pipeline dies for any reason (session ends, network hiccup), the
-  container restarts it automatically after a few seconds rather than
-  exiting.
+  (mDNS) discovery works and the Connect device is actually visible on your LAN.
+- go-librespot is pinned by the `GO_LIBRESPOT_REF` Docker build arg. Rebuild the
+  image periodically to pick up upstream Connect and DJ fixes.
+
+```bash
+docker build --build-arg GO_LIBRESPOT_REF=v0.10.0 -t spotify-connect-streamer .
+```
