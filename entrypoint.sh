@@ -89,11 +89,9 @@ case "${AUTH_MODE}" in
     if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
       echo "entrypoint: no cached credentials. running standalone OAuth login on port ${OAUTH_PORT:-8888}..." >&2
       echo "entrypoint: open the login URL printed below in your browser" >&2
-      # Tee stdout so the "Browse to:" login URL is visible in logs,
-      # while discarding the raw audio that flows after auth completes.
       timeout 300 librespot \
         "${librespot_base_args[@]}" \
-        --backend pipe 2>&1 | head -c 8192 &
+        --backend pipe &
       AUTH_PID=$!
       # Wait for credentials to appear (librespot caches them on successful login)
       for i in $(seq 1 300); do
