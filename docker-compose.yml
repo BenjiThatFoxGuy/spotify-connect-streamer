@@ -32,12 +32,15 @@ services:
     # Requires: sudo modprobe snd-aloop on the host.
     devices:
       - /dev/snd:/dev/snd
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     environment:
       DEVICE_NAME: "${DEVICE_NAME:-Stream Output}"
       DEVICE_TYPE: "${DEVICE_TYPE:-speaker}"
       MOUNT_POINT: "${MOUNT_POINT:-stream.mp3}"
       ICECAST_HOST: "${ICECAST_HOST:-localhost}"
       ICECAST_PORT: "${ICECAST_PORT:-8000}"
+      ICECAST_SOURCE_USERNAME: "${ICECAST_SOURCE_USERNAME:-source}"
       ICECAST_SOURCE_PASSWORD: "${ICECAST_SOURCE_PASSWORD:-hackme}"
       CACHE_DIR: "/tmp/spot-cache"
       BACKEND: "${BACKEND:-pipe-pv}"
