@@ -82,8 +82,36 @@ case "${AUTH_MODE}" in
     echo "entrypoint: starting in device-auth mode" >&2
     ;;
   oauth)
-    echo "entrypoint: starting in OAuth mode (needs browser access on port ${OAUTH_PORT:-8888})" >&2
     librespot_base_args+=(--enable-oauth --oauth-port "${OAUTH_PORT:-8888}")
+    # Run librespot standalone first if no cached credentials exist.
+    # This prevents the streaming pipeline from crashing (icecast 404)
+    # and killing the OAuth flow mid-login.
+    if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
+      echo "entrypoint: no cached credentials. running standalone OAuth login on port ${OAUTH_PORT:-8888}..." >&2
+      echo "entrypoint: open the login URL printed below in your browser" >&2
+      timeout 300 librespot \
+        "${librespot_base_args[@]}" \
+        --backend pipe > /dev/null 2>&1 &
+      AUTH_PID=$!
+      # Wait for credentials to appear (librespot caches them on successful login)
+      for i in $(seq 1 300); do
+        if [ -f "${CACHE_DIR}/credentials.json" ]; then
+          echo "entrypoint: OAuth login successful! credentials cached." >&2
+          kill "${AUTH_PID}" 2>/dev/null || true
+          wait "${AUTH_PID}" 2>/dev/null || true
+          break
+        fi
+        sleep 1
+      done
+      if [ ! -f "${CACHE_DIR}/credentials.json" ]; then
+        echo "entrypoint: OAuth login timed out after 300s. starting pipeline anyway..." >&2
+        kill "${AUTH_PID}" 2>/dev/null || true
+        wait "${AUTH_PID}" 2>/dev/null || true
+      fi
+    else
+      echo "entrypoint: cached credentials found, skipping OAuth login" >&2
+    fi
+    echo "entrypoint: starting in OAuth mode" >&2
     ;;
   password)
     if [ -n "${SPOTIFY_USERNAME:-}" ] && [ -n "${SPOTIFY_PASSWORD:-}" ]; then
