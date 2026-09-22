@@ -91,7 +91,7 @@ case "${AUTH_MODE}" in
       echo "entrypoint: open the login URL printed below in your browser" >&2
       timeout 300 librespot \
         "${librespot_base_args[@]}" \
-        --backend pipe > /dev/null 2>&1 &
+        --backend pipe > /dev/null &
       AUTH_PID=$!
       # Wait for credentials to appear (librespot caches them on successful login)
       for i in $(seq 1 300); do
